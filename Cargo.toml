@@ -1,5 +1,5 @@
 [package]
-name = "mql"
+name = "practical_quandry"
 version = "0.1.0"
 authors = ["罗恺欣 <luo.800@buckeyemail.osu.edu>"]
 edition = "2018"

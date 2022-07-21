@@ -1,28 +1,31 @@
 extern crate nom;
 
-use super::node::Node;
+use crate::node::Node;
 use nom::branch::alt;
-use nom::character::complete::*;
-use nom::bytes::complete::tag;
+use nom::character::streaming::*;
+use nom::bytes::streaming::tag;
 use nom::combinator::{map,value,recognize,opt};
 use nom::multi::{many0,many1,separated_list0,separated_list1};
-use nom::sequence::{delimited, pair,preceded,terminated,tuple};
-use nom::IResult;
+use nom::sequence::{delimited, pair,preceded,terminated};
+use nom::{IResult};
 
 pub fn parse(input:&str)->IResult<&str,Box<Node>>{
-    func_bind(input)
+    expr(input)
  }
  
- fn func_bind(input:&str)->IResult<&str,Box<Node>>{
-    let LET = delimited(space0, tag("let"), space0);
-    let EQ = delimited(space0, tag("="), space0);
-    map(pair(delimited(LET,ident,EQ),expr),|node|{
-       let (name,body) = node;
-       Box::new(Node::FuncBind(name,body))
-    })(input)
+ pub fn expr(input:&str)->IResult<&str,Box<Node>>{
+   assign_expr(input)
  }
- fn expr(input:&str)->IResult<&str,Box<Node>>{
-    condition_expr(input)
+
+ fn assign_expr(input:&str)->IResult<&str,Box<Node>>{
+   let token = |word|{preceded(multispace0, word)};
+   let assignment = pair(pattern_match,pair(token(tag("=")),expr));
+   let decl = pair(token(tag("var")),pair(pattern_match,pair(token(tag("=")),expr)));
+   alt((
+      map(assignment,|(lhs,(_,rhs))|{Box::new(Node::Assign(lhs, rhs))}),
+      map(decl,|(_,(lhs,(_,rhs)))|{Box::new(Node::Assign(lhs, rhs))}),
+      condition_expr
+   ))(input)
  }
  fn condition_expr(input:&str)->IResult<&str,Box<Node>>{
     map(pair(logical_union,opt(pair(char('?'),pair(condition_expr,pair(char(':'),condition_expr))))),
@@ -185,22 +188,22 @@ pub fn parse(input:&str)->IResult<&str,Box<Node>>{
     ))(input)
  }
  fn atom(input:&str)->IResult<&str,Box<Node>>{
+   let token = |parser|{preceded(multispace0, parser)};
     alt((
          literal,
          ident,
          literal_expr,
-         delimited(multispace0, delimited(char('('), expr, char(')')), multispace0),
+         delimited(token(tag("(")), expr, token(tag(")"))),
       ))(input)
  }
  fn literal_expr(input:&str)->IResult<&str,Box<Node>>{
     alt((
        pattern_def,
-       lambda_def
     ))(input)
  }
  fn pattern_def(input:&str)->IResult<&str,Box<Node>>{
     
-    let space_ignored_char = |c:char|{delimited(multispace0, char(c), multispace0)};
+    let space_ignored_char = |c:char|{preceded(multispace0, char(c))};
     let left_enclosure = space_ignored_char('{');
     let right_enclosure = space_ignored_char('}');
     let comma = space_ignored_char(',');
@@ -210,20 +213,9 @@ pub fn parse(input:&str)->IResult<&str,Box<Node>>{
        }),
     ))(input)
  }
- fn lambda_def<'a>(input:&'a str)->IResult<&str,Box<Node>>{
-    let space_ignored_char = |c:char|{delimited(multispace0, char(c), multispace0)};
-    let space_ignored_tag = |s:&'a str|{delimited(multispace0, tag(s), multispace0)};
-    let header = preceded(space_ignored_tag("\\"),separated_list0(space_ignored_char(','),pattern_match));
-    let conditional_case = pair(delimited(space_ignored_char('|'), separated_list1(space_ignored_char(','), pattern_match), space_ignored_tag("->")),expr);
-    let default_case = preceded(space_ignored_tag("->"), expr);
-    //handle newline
-    map(tuple((terminated(header,opt(newline)), many0(terminated(conditional_case,space_ignored_char('\n'))),terminated(default_case,space_ignored_char('\n')))),|nodes|{
-       let(param_patterns,conditional_patterns,default) = nodes;
-       Box::new(Node::LambdaDef(param_patterns,conditional_patterns,default))
-    })(input)
- }
+ 
  fn pattern_match(input:&str)->IResult<&str,Box<Node>>{
-    let space_ignored_char = |c:char|{delimited(multispace0, char(c), multispace0)};
+    let space_ignored_char = |c:char|{preceded(multispace0, char(c))};
  
     let left_enclosure = space_ignored_char('{');
     let right_enclosure = space_ignored_char('}');
@@ -263,7 +255,7 @@ pub fn parse(input:&str)->IResult<&str,Box<Node>>{
  fn ident(input:&str)->IResult<&str,Box<Node>>{
  
     map(
-       delimited(multispace0, recognize(pair(alt((tag("_"),alpha1)),many0(alt((tag("_"),alphanumeric1))))), multispace0), 
+       preceded(multispace0, recognize(pair(alt((tag("_"),alpha1)),many0(alt((tag("_"),alphanumeric1)))))), 
        |literal:&str|{
           Box::new(Node::Ident(String::from(literal)))
        }
@@ -278,15 +270,16 @@ pub fn parse(input:&str)->IResult<&str,Box<Node>>{
  }
  fn integer(input:&str)->IResult<&str,Box<Node>>{
      map(
-         delimited(space0, digit1, space0),
+         preceded(multispace0, digit1),
          |literal:&str|{
              Box::new(Node::Integer(literal.parse::<i64>().unwrap()))
          })(input)
  }
  
  fn boolean(input:&str)->IResult<&str,Box<Node>>{
+   let token = |word|{preceded(multispace0, tag(word))};
      alt((
-        value(Box::new(Node::Boolean(true)),delimited(space0,tag("true"),space0)),
-        value(Box::new(Node::Boolean(false)),delimited(space0,tag("false"),space0))
+        value(Box::new(Node::Boolean(true)),token("true")),
+        value(Box::new(Node::Boolean(false)),token("fasle"))
      ))(input)
  }
