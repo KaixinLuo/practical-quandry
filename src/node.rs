@@ -29,9 +29,9 @@ pub enum Node{
     PatternDef(Vec<Box<Node>>),
     StructMatch(Box<Node>,Vec<Box<Node>>),
     ListMatch(Box<Node>,Vec<Box<Node>>),
-    BlockStmt(usize,Vec<Box<Node>>),
+    Block(Vec<Box<Node>>),
     ExprStmt(usize,Box<Node>),
-    IfStmt(usize,Box<Node>,Box<Node>,Box<Node>),
+    IfStmt(usize,Vec<(/*condition*/Box<Node>,/*if true*/Box<Node>)>),
     LoopStmt(usize,Box<Node>,Box<Node>),
     ReturnStmt(usize,Box<Node>),
     Empty()
