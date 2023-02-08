@@ -1,26 +1,28 @@
 extern crate nom;
 
+use crate::atom::atom;
 use crate::node::Node;
-use nom::branch::alt;
-use nom::character::streaming::*;
-use nom::bytes::streaming::tag;
+use nom::branch::{alt, permutation};
+use nom::character::complete::*;
+use nom::bytes::complete::tag;
 use nom::combinator::{map,value,recognize,opt};
-use nom::multi::{many0,many1,separated_list0,separated_list1};
-use nom::sequence::{delimited, pair,preceded,terminated};
+use nom::multi::{many0,many1,separated_list0, separated_list1};
+use nom::sequence::{delimited, pair,preceded, self};
 use nom::{IResult};
+use std::iter;
 
 pub fn parse(input:&str)->IResult<&str,Box<Node>>{
     expr(input)
  }
  
  pub fn expr(input:&str)->IResult<&str,Box<Node>>{
-   assign_expr(input)
+   call(input)
  }
 
  fn assign_expr(input:&str)->IResult<&str,Box<Node>>{
    let token = |word|{preceded(multispace0, word)};
-   let assignment = pair(pattern_match,pair(token(tag("=")),expr));
-   let decl = pair(token(tag("var")),pair(pattern_match,pair(token(tag("=")),expr)));
+   let assignment = pair(atom,pair(token(tag("=")),expr));
+   let decl = pair(token(tag("var")),pair(atom,pair(token(tag("=")),expr)));
    alt((
       map(assignment,|(lhs,(_,rhs))|{Box::new(Node::Assign(lhs, rhs))}),
       map(decl,|(_,(lhs,(_,rhs)))|{Box::new(Node::Assign(lhs, rhs))}),
@@ -170,116 +172,137 @@ pub fn parse(input:&str)->IResult<&str,Box<Node>>{
        
     }),call))(input)
  }
+ 
  fn call(input:&str)->IResult<&str,Box<Node>>{
-    let callable = alt((
-       ident,
-       literal,
-       delimited(multispace0, delimited(char('('), expr, char(')')), multispace0)
-    ));
-    alt((
-       map(pair(callable,many1(delimited(char('('), separated_list0(delimited(multispace0,char(','),multispace0), expr), char(')')))),|nodes:(Box<Node>,Vec<Vec<Box<Node>>>)|{
-          let (mut call_name,params) = nodes;
-          for param_list in params{
-             call_name = Box::new(Node::Call(call_name,param_list))
-          }
-          call_name
-       }),
-       atom
-    ))(input)
+   let token = 
+      |parser|{
+         preceded(multispace0, parser)};
+   alt((map(
+      pair(
+         opt(mem_access),
+         delimited(
+            token(tag("(")), 
+            separated_list0(token(tag(",")), expr), 
+            token(tag(")")))), 
+      |(optional_name,param_list)|{
+         Box::new(Node::Call(optional_name, param_list))
+      }),mem_access))(input)
  }
- fn atom(input:&str)->IResult<&str,Box<Node>>{
-   let token = |parser|{preceded(multispace0, parser)};
-    alt((
-         literal,
-         ident,
-         literal_expr,
-         delimited(token(tag("(")), expr, token(tag(")"))),
-      ))(input)
+fn mem_access(input:&str)->IResult<&str,Box<Node>>{
+   let token = |parser|{
+      preceded(multispace0, parser)};
+   
+   let call_postfix = 
+   map(delimited(
+      token(char('(')), 
+      separated_list0(
+         token(char(',')),
+         expr), 
+      token(char(')'))),
+      |params|{
+         |name|{
+            Box::new(Node::Call(name, params))}});
+
+   let member_postfix = map(pair(token(char('.')),atom),|(_,field_name)|{|var_name|{Box::new(Node::MemberOf(var_name, field_name))}});
+   let index_postfix = map(delimited(
+      token(char('[')), 
+         expr, 
+      token(char(']'))),|idx|{|arr_name|{Box::new(Node::IndexOf(arr_name, idx))}});
+   map(pair(atom,many1(permutation((
+      index_postfix,
+      call_postfix,
+      member_postfix,
+   )))),|(base,params)|{
+      let mut res = base;
+      for param in params{
+         res = param(res);
+      }
+      res
+   })(input)
+}
+fn indexing(input:&str)->IResult<&str,Box<Node>>{
+   let token = |parser|{
+      preceded(multispace0, parser)};
+
+   map(
+      pair(
+         atom,
+         many1(delimited(
+            token(tag("[")), 
+            expr, 
+            token(tag("]"))))
+      ),
+      |(first,second)|{
+         Box::new(Node::IndexOf(first, second))
+      }
+   )(input)
+}
+ fn member(input:&str)->IResult<&str,Box<Node>>{
+   let token = 
+   |parser|{
+      preceded(multispace0, parser)};
+   map(
+      pair(
+         atom,
+         pair(
+            token(char('.')),
+            mem_access)
+      ),|(op1,(_,op2))|{Box::new(Node::MemberOf(op1, op2))})(input)
  }
- fn literal_expr(input:&str)->IResult<&str,Box<Node>>{
-    alt((
-       pattern_def,
-    ))(input)
- }
- fn pattern_def(input:&str)->IResult<&str,Box<Node>>{
-    
-    let space_ignored_char = |c:char|{preceded(multispace0, char(c))};
-    let left_enclosure = space_ignored_char('{');
-    let right_enclosure = space_ignored_char('}');
-    let comma = space_ignored_char(',');
-    alt((
-       map(delimited(left_enclosure, separated_list1(comma, pattern_def), right_enclosure),|nodes|{
-          Box::new(Node::PatternDef(nodes))
-       }),
-    ))(input)
- }
- 
- fn pattern_match(input:&str)->IResult<&str,Box<Node>>{
-    let space_ignored_char = |c:char|{preceded(multispace0, char(c))};
- 
-    let left_enclosure = space_ignored_char('{');
-    let right_enclosure = space_ignored_char('}');
-    let comma = space_ignored_char(',');
-    let alias = terminated(opt(ident),space_ignored_char('@'));
-    let struct_match = map(pair(alias,delimited(left_enclosure, separated_list1(comma, pattern_match), right_enclosure)),|nodes|{
-       let (name,pat) = nodes;
-       if let Some(alias_name) = name{
-          Box::new(Node::StructMatch(alias_name,pat))
-       }else{
-          Box::new(Node::StructMatch(Box::new(Node::Ident(String::from(""))),pat))   
-       }
-       
-    });
- 
-    let left_enclosure_list = space_ignored_char('[');
-    let right_enclosure_list = space_ignored_char(']');
-    let column = space_ignored_char(':');
-    let alias_list = terminated(opt(ident),space_ignored_char('@'));
-    let list_match = map(pair(alias_list,delimited(left_enclosure_list, separated_list1(column, pattern_match), right_enclosure_list)),|nodes|{
-       let (name,pat) = nodes;
-       if let Some(alias_name) = name{
-          Box::new(Node::ListMatch(alias_name,pat))
-       }else{
-          Box::new(Node::ListMatch(Box::new(Node::Ident(String::from(""))),pat))   
-       }
-       
-    });
- 
-    alt((
-       struct_match,
-       list_match,
-       ident,
-       literal
-    ))(input)
- }
- fn ident(input:&str)->IResult<&str,Box<Node>>{
- 
-    map(
-       preceded(multispace0, recognize(pair(alt((tag("_"),alpha1)),many0(alt((tag("_"),alphanumeric1)))))), 
-       |literal:&str|{
-          Box::new(Node::Ident(String::from(literal)))
-       }
-    )(input)
- }
- 
- fn literal(input:&str)->IResult<&str,Box<Node>>{
-    alt((
-       integer,
-       boolean,
-    ))(input)
- }
- fn integer(input:&str)->IResult<&str,Box<Node>>{
-     map(
-         preceded(multispace0, digit1),
-         |literal:&str|{
-             Box::new(Node::Integer(literal.parse::<i64>().unwrap()))
-         })(input)
- }
- 
- fn boolean(input:&str)->IResult<&str,Box<Node>>{
-   let token = |word|{preceded(multispace0, tag(word))};
-     alt((
-        value(Box::new(Node::Boolean(true)),token("true")),
-        value(Box::new(Node::Boolean(false)),token("fasle"))
-     ))(input)
- }
+
+#[cfg(test)]
+mod tests{
+   use super::*;
+   #[test]
+   fn test_member_ok(){
+      assert_eq!(expr("arr.length"), Ok(("",Box::new(
+         Node::MemberOf(
+               Box::new(
+                  Node::Ident(String::from("arr"))),
+                  Box::new(Node::Ident(String::from("length"))))))));
+               }
+   #[test]
+   fn test_index_ok(){
+      assert_eq!(indexing("arr[1][2][34]"), Ok(("",Box::new(
+         Node::IndexOf(
+               Box::new(
+                  Node::Ident(String::from("arr"))),
+                  vec![Box::new(Node::Integer(1)),Box::new(Node::Integer(2)),Box::new(Node::Integer(34))])))));
+               }
+
+   #[test]
+   fn test_call_ok(){
+      assert_eq!(expr("func(1,2,34)"), Ok(("",Box::new(
+         Node::Call(
+            Option::Some(
+               Box::new(
+                  Node::Ident(String::from("func")))),
+                  vec![Box::new(Node::Integer(1)),
+                     Box::new(Node::Integer(2)),
+                     Box::new(Node::Integer(34))])))));
+
+   }
+
+   #[test]
+   fn test_call_ok_with_space(){
+      assert_eq!(expr("func( \n1,\t2,\r34)"), Ok(("",Box::new(
+         Node::Call(
+            Option::Some(
+               Box::new(
+                  Node::Ident(String::from("func")))),
+                  vec![Box::new(Node::Integer(1)),
+                     Box::new(Node::Integer(2)),
+                     Box::new(Node::Integer(34))])))));
+
+   }
+   #[test]
+   fn test_call_ok_with_space_noparam(){
+      assert_eq!(expr("func( \n\t\r)"), Ok(("",Box::new(
+         Node::Call(
+            Option::Some(
+               Box::new(
+                  Node::Ident(String::from("func")))),
+                  vec![])))));
+
+   }
+}
